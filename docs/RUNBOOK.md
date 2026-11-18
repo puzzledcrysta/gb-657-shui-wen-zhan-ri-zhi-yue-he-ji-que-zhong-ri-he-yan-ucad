@@ -61,6 +61,47 @@ curl -sS -o /tmp/monthly.csv http://localhost:18216/api/export/monthly.csv
 3. 逐月加总 `用量kWh` 应等于 `manifest.json` 的 `counters` 与 `accounts[1]`（区间账）两侧；
 4. 账单 `金额元` 之和应等于 `accounts[3]` 两侧，分项之和等于账单额。
 
+## 5A 汛后留档与原始日值清理
+
+汛后要按期清掉原始日值来件，但抽查仍要能解释某天为何采信或隔离。清理不是直接删表，
+必须先走「留档 → 校验 → 清理」三步（导出页「留档与清理」面板，或 M8 接口）：
+
+```bash
+# 1. 留档：凭证写到 var/archives/<batch_id>/，逐文件登记 sha256 与整包指纹
+curl -sS -X POST http://localhost:18216/api/batches/$BID/archive
+# 2. 校验：读磁盘实物比对登记哈希，全部一致才放行
+curl -sS http://localhost:18216/api/batches/$BID/archive/verify
+# 3. 清理：校验通过后删 readings 原始日值（同事务，失败整体回滚）
+curl -sS -X POST http://localhost:18216/api/batches/$BID/cleanup
+```
+
+留档目录每份批次包含六份文件：
+
+| 文件 | 回答的问题 |
+|---|---|
+| `batch-receipt.csv` | 这批收了多少条，采信/估抄/隔离/空行各多少，差额是否为 0 |
+| `daily-ledger.csv` | 每个原始行号的裁决：采信还是隔离、原因码、是否参与月量、区间号、归属月份 |
+| `readings-evidence.csv` | 采信/估抄行的原值、折合值与行号（清理后读数导出回退到此文件） |
+| `quarantine-evidence.csv` | 隔离行原值、原因码与说明 |
+| `run-manifest.json` | 运行清单：输入 sha256、阶段计数、四账 |
+| `checksums.json` | 上述五份文件各自 sha256 与整包指纹 |
+
+清理后的对账方式（不依赖原始来件、也不依赖库内 readings 表）：
+
+- 月报 `monthly.csv`、区间、隔离、运行清单照常从库内保留的月量/区间/隔离表导出；
+- 读数证据与逐日台账改从留档目录取，**导出前先按登记 sha256 复核**，被改即报
+  `E_ARCHIVE_CORRUPT`，不吐出失真数据；
+- 抽查某一天：在 `daily-ledger.csv` 按「当地日期 + 表号」定位，看每条记录的
+  「裁决 / 原因码 / 参与月量 / 说明」，同一天几条都没算进去时逐条给原因。
+
+留档的写保护与重试约定：
+
+- 凭证只写一次：重复留档返回既有凭证（`reused=true`），文件字节与 mtime 不变；
+  目录已存在但无登记记录时报 `E_ARCHIVE_DIR_EXISTS`，拒绝覆盖；
+- 已留档/已清理批次的强制重算与重试报 409 `E_BATCH_RETAINED`，凭证不可覆盖；
+- 清理可安全重试：已清理再调只回显结果，不重复删除、不动凭证；
+- 清理失败（校验不过、事务中断）不删任何日值，归档登记停在 `archived`，排除故障后重试。
+
 ## 6 环境变量
 
 | 变量 | 默认 | 说明 |

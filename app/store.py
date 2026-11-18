@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archives (
+    batch_id TEXT PRIMARY KEY,
+    archive_dir TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    archived_at TEXT,
+    cleaned_at TEXT,
+    files_json TEXT NOT NULL DEFAULT '[]',
+    checksum_sha256 TEXT,
+    manifest_sha256 TEXT,
+    entry_count INTEGER NOT NULL DEFAULT 0,
+    pruned_readings INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -347,6 +361,61 @@ class Store:
             return {t: conn.execute(
                 f"SELECT COUNT(*) AS n FROM {t} WHERE batch_id=?", (batch_id,)
             ).fetchone()["n"] for t in tables}
+
+    # ---------- 留档与清理（M8） ----------
+    def get_archive(self, batch_id: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM archives WHERE batch_id=?",
+                               (batch_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item["files"] = json.loads(item.pop("files_json") or "[]")
+        return item
+
+    def list_archives(self, limit: int = 30) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM archives ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (limit,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["files"] = json.loads(item.pop("files_json") or "[]")
+            out.append(item)
+        return out
+
+    def insert_archive(self, archive: dict) -> None:
+        """归档登记只 INSERT 不 UPDATE：凭证一经登记即不可覆盖。"""
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO archives (batch_id,archive_dir,status,created_at,
+                        archived_at,cleaned_at,files_json,checksum_sha256,
+                        manifest_sha256,entry_count,pruned_readings,note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (archive["batch_id"], archive["archive_dir"], archive["status"],
+                 archive["created_at"], archive.get("archived_at"),
+                 archive.get("cleaned_at"),
+                 json.dumps(archive.get("files", []), ensure_ascii=False),
+                 archive.get("checksum_sha256"), archive.get("manifest_sha256"),
+                 int(archive.get("entry_count", 0)),
+                 int(archive.get("pruned_readings", 0)),
+                 archive.get("note", "")))
+
+    def prune_readings_tx(self, batch_id: str, stamp: str) -> int:
+        """清理原始日值并在同一事务里把归档登记置为 cleaned。
+
+        两个动作共用一个连接与事务：任一步失败整体回滚，
+        不会出现「日值已删但状态没更新」的半清理。
+        """
+        with self.connect() as conn:
+            cur = conn.execute("DELETE FROM readings WHERE batch_id=?", (batch_id,))
+            pruned = cur.rowcount
+            conn.execute(
+                "UPDATE archives SET status='cleaned', cleaned_at=?, "
+                "pruned_readings=? WHERE batch_id=?",
+                (stamp, pruned, batch_id))
+            return pruned
 
     def _all(self, sql: str, args: tuple) -> list[dict]:
         with self.connect() as conn:

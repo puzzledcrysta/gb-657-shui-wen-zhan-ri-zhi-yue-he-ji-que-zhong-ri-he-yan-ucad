@@ -1,6 +1,6 @@
 # 深度登记 hydrocalendar（水文站日值月合计缺重日核验）
 
-- 规模：中型（7 个功能模块 / 6 个应用页 / 77 条测试）
+- 规模：中型（8 个功能模块 / 6 个应用页 / 105 条测试）
 - 核心规则：站点日值按版本选择而非后写覆盖，零雨与缺测分开；月合计用 Decimal，并以当地自然日日历核对完整度。
 - 使用者与工作流：流域数据员复核多站逐日雨量、缺重日、月合计与相邻站异常。
 
@@ -15,6 +15,7 @@
 | M5 月量计算 | 按版本选择日值并计算月合计与缺日 | POST /api/hydro/monthly、页面 /months | `app/modules/m5_months/hydro.py` `app/modules/m5_months/allocate.py` `app/modules/m5_months/weights.py` | `tests/test_m5_months.py` `tests/test_hydro_rules.py` |
 | M6 批次与对账 | 跑全流程、查批次历史、看四账、失败重试 | POST /api/runs、GET /api/batches、GET /api/reconcile、页面 /batches | `app/modules/m6_batches/service.py` `app/modules/m6_batches/compare.py` `app/modules/m6_batches/history.py` `app/modules/m6_batches/resume.py` | `tests/test_m6_batches.py` |
 | M7 导出 | 导出单一月报与运行证据 | GET /api/export/monthly.csv、页面 /report | `app/modules/m7_export/evidence.py` `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_m7_export.py` |
+| M8 留档清理 | 凭证写一次、校验后清理原始日值、清理后台账独立对账、重试不覆盖 | POST /api/batches/{id}/archive、GET .../archive/verify、POST .../cleanup、GET /api/export/daily-ledger.csv、/api/export/batch-receipt.csv | `app/modules/m8_retention/service.py` `app/modules/m8_retention/ledger.py` `app/modules/m8_retention/checksum.py` | `tests/test_m8_retention.py` |
 
 端到端：`tests/test_e2e.py`（脏样例 → 六页 200 → 四账 → 导出，含 4xx 失败输入与幂等重跑）。
 不变量：`tests/test_invariants.py`（区间账 = 月度账、幂等重跑行数不变、月桶划分、账单闭合、读数分区）。
@@ -38,6 +39,9 @@
 | TRAP-18 | 0 字节文件、只有表头、数据行全是空行 | 三种都返回「成功导入 0 行」，或直接除零 | 三个文件级原因码分开返回，不落半批数据 | `app/modules/m1_ingest/service.py` | `tests/test_m1_ingest.py::test_empty_states_return_distinct_codes` |
 | TRAP-23 | 区间止点与下一段起点都算一次 | 相邻区间重复计入一天，月度用量偏高 | 区间与月桶都声明左闭右开 `[起, 止)`，相邻段首尾相接 | `app/modules/m5_months/weights.py`、`app/modules/m4_intervals/restore.py` | `tests/test_m5_months.py::test_month_slices_are_half_open`、`tests/test_m4_intervals.py::test_intervals_are_half_open_and_contiguous` |
 | TRAP-24 | 各月/各分量各自四舍五入后合计不等 | 分完差 0.001~0.02，账永远差几分 | 最大余额法分月；分量残差并入最大分量；账单先合计再舍入，分项补差 | `app/modules/m5_months/weights.py`、`app/modules/m5_months/tou.py` | `tests/test_m5_months.py::test_largest_remainder_keeps_total_exact`、`tests/test_m5_months.py::test_tou_components_closed_to_total` |
+| TRAP-25 | 汛后清理原始日值，月报只剩月量，抽查问某天为何采信/隔离答不上 | 直接删 readings 表，逐日证据永久丢失 | 清理前先把逐日裁决台账、批次回执、读数/隔离证据、运行清单写进留档目录并登记 sha256，清理后导出回退到校验过的凭证 | `app/modules/m8_retention/service.py`、`app/modules/m8_retention/ledger.py` | `tests/test_m8_retention.py::test_readings_export_after_cleanup_matches_before`、`::test_daily_ledger_explains_quarantined_duplicates_on_same_day` |
+| TRAP-26 | 清理失败后重试把已归档凭证覆盖掉 | 重算批次或重写留档目录，旧哈希与新文件对不上，证据链断裂 | 凭证 open(x) 只写一次 + 归档登记只 INSERT；已留档批次强制重算报 409 `E_BATCH_RETAINED`；清理与状态更新同事务，失败整体回滚，重试不重复删除 | `app/modules/m8_retention/service.py`、`app/store.py` | `tests/test_m8_retention.py::test_archive_is_idempotent_and_never_overwrites`、`::test_retry_after_archive_is_rejected_and_evidence_untouched`、`::test_cleanup_is_atomic_when_status_update_fails` |
+| TRAP-27 | 留档文件被静默篡改，清理后导出失真数据 | 导出直接读文件，发现不了被改 | 每次回取先按登记 sha256 复核，不一致报 `E_ARCHIVE_CORRUPT` 拒绝导出；整包指纹把文件级哈希再哈希一次 | `app/modules/m8_retention/checksum.py`、`app/modules/m8_retention/service.py` | `tests/test_m8_retention.py::test_corrupted_evidence_blocks_cleanup`、`::test_http_archive_and_cleanup_flow` |
 
 ## 对账规则
 
@@ -45,6 +49,7 @@
 - 区间账：主寄存器（总表优先）区间用量合计 = 月度分摊用量合计（0.001 kWh，逐位相等）。
 - 月度账：同月同表「总表 = 峰 + 平 + 谷」，闭合后的残差必须为 0，闭合前的尾差条数单独计数。
 - 账单账：账单金额 = 分项金额之和（分项先截尾再补分），四账在 `/` 与 `/batches` 页、`/api/reconcile`、运行清单里同源显示。
+- 留档账（M8）：批次回执里「收到数据行 = 采信 + 估抄 + 隔离 + 空行，差额 0」；逐日台账每个原始行号恰好一行，`参与月量=是` 的行必有区间号与归属月份，`否` 的行必带原因码或首读/估抄说明。清理只删 readings，月量、区间、隔离、清单与留档登记保留，导出回退凭证前先过 sha256。
 
 ## 反例与不变量
 

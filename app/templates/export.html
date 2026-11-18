@@ -19,16 +19,50 @@
 {% else %}
 <section class="panel">
   <div class="panel-head">
+    <h2 class="panel-title">留档与清理</h2>
+    <span class="panel-sub mono">
+      {% if archive %}{{ archive.status }}{% else %}未留档{% endif %}
+    </span>
+  </div>
+  <div class="retention">
+    <div class="retention-state">
+      {% if not archive %}
+      <p class="cell-note">原始日值还在库内。清理前先留档，凭证写入归档目录并逐文件登记 sha256。</p>
+      {% elif archive.status == 'archived' %}
+      <p class="cell-note">已留档 {{ archive.entry_count }} 份凭证，原始日值尚未清理；可先校验再清理。</p>
+      {% else %}
+      <p class="cell-note">原始日值已清理（{{ archive.pruned_readings }} 行），月报与台账由留档凭证独立对账。</p>
+      {% endif %}
+      <dl class="manifest">
+        <div class="manifest-row"><dt>归档目录</dt><dd class="mono">{{ archive.archive_dir if archive else '—' }}</dd></div>
+        <div class="manifest-row"><dt>整包指纹</dt><dd class="mono">{{ archive.checksum_sha256[:16] if archive else '—' }}</dd></div>
+        <div class="manifest-row"><dt>清理时间</dt><dd class="mono">{{ archive.cleaned_at|localdt if archive and archive.cleaned_at else '—' }}</dd></div>
+      </dl>
+    </div>
+    <div class="actions retention-actions">
+      <button class="btn btn-ghost btn-sm retention-button" type="button"
+              data-action="archive" data-batch="{{ batch.batch_id }}">留档凭证</button>
+      <button class="btn btn-ghost btn-sm retention-button" type="button"
+              data-action="verify" data-batch="{{ batch.batch_id }}">校验凭证</button>
+      <button class="btn btn-ghost btn-sm retention-button" type="button"
+              data-action="cleanup" data-batch="{{ batch.batch_id }}">清理原始日值</button>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2 class="panel-title">文件</h2>
     <span class="panel-sub mono">{{ counts.allocations }} 分摊 · {{ counts.intervals }} 区间 · {{ counts.quarantine }} 隔离</span>
   </div>
   <table class="table">
-    <thead><tr><th>文件</th><th class="num">行数</th><th>下载</th></tr></thead>
+    <thead><tr><th>文件</th><th class="num">行数</th><th>来源</th><th>下载</th></tr></thead>
     <tbody>
       {% for item in files %}
       <tr>
         <td>{{ item.label }}</td>
         <td class="num mono">{{ item.rows }}</td>
+        <td>{% if item.from_archive %}<span class="badge badge-warn">留档凭证</span>{% else %}库内数据{% endif %}</td>
         <td><a class="link" href="{{ item.href }}">{{ item.key }}</a></td>
       </tr>
       {% endfor %}
@@ -51,4 +85,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/app.js" type="module"></script>
+<script src="/static/retention.js" type="module"></script>
 {% endblock %}

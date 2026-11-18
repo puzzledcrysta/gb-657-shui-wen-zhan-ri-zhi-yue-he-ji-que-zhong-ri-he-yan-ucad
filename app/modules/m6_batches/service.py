@@ -24,6 +24,24 @@ def _ms(start: float) -> int:
     return max(1, int((time.perf_counter() - start) * 1000))
 
 
+def _ensure_not_archived(store, batch_key: str, mode: str) -> None:
+    """留档后的批次禁止重算覆盖：凭证是清理后唯一对账依据，改了就对不上。
+
+    按 batch_key 找到同输入批次，再查它的归档登记；命中即抛 409。
+    普通重跑（非 force）在更上层已走幂等回放，到不了这里。
+    """
+    batch = store.find_by_key(batch_key)
+    if batch is None:
+        return
+    record = store.get_archive(batch["batch_id"])
+    if record is not None:
+        raise errors.Conflict(
+            f"批次 {batch['batch_id']} 已{('清理' if record['status'] == 'cleaned' else '留档')}，"
+            "原始日值凭证不可覆盖；如需重算请改用新输入生成新批次",
+            code="E_BATCH_RETAINED",
+            detail={"batch_id": batch["batch_id"], "archive_status": record["status"]})
+
+
 def run(settings, store, *, sample: str | None = None, mode: str = "full") -> dict:
     name = sample or config.DEFAULT_SAMPLE
     path = m1_service.sample_path(settings, name)
@@ -40,6 +58,8 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
             store.touch_batch(existing["batch_id"], history.iso(history.now_utc()))
             existing = store.get_batch(existing["batch_id"]) or existing
             return resume.replay_payload(existing, store)
+
+    _ensure_not_archived(store, key, mode)
 
     started_at = history.iso(history.now_utc())
     batch = history.build_batch(

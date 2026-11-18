@@ -20,6 +20,48 @@ def export_monthly(batch_id: str | None = None, ctx: Ctx = Depends(get_ctx)) -> 
     return _response(body, filename, "text/csv; charset=utf-8")
 
 
+@router.get("/api/export/intervals.csv")
+def export_intervals(batch_id: str | None = None,
+                     ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.intervals_csv(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "text/csv; charset=utf-8")
+
+
+@router.get("/api/export/quarantine.csv")
+def export_quarantine(batch_id: str | None = None,
+                      ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.quarantine_csv(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "text/csv; charset=utf-8")
+
+
+@router.get("/api/export/readings.csv")
+def export_readings(batch_id: str | None = None,
+                    ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.readings_csv(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "text/csv; charset=utf-8")
+
+
+@router.get("/api/export/manifest.json")
+def export_manifest(batch_id: str | None = None,
+                    ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.manifest_json(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "application/json; charset=utf-8")
+
+
+@router.get("/api/export/daily-ledger.csv")
+def export_daily_ledger(batch_id: str | None = None,
+                        ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.daily_ledger_csv(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "text/csv; charset=utf-8")
+
+
+@router.get("/api/export/batch-receipt.csv")
+def export_batch_receipt(batch_id: str | None = None,
+                         ctx: Ctx = Depends(get_ctx)) -> Response:
+    body, filename = service.batch_receipt_csv(ctx.settings, ctx.store, batch_id)
+    return _response(body, filename, "text/csv; charset=utf-8")
+
+
 @router.get("/report")
 def page_export(request: Request, batch_id: str | None = None,
                 ctx: Ctx = Depends(get_ctx)):
